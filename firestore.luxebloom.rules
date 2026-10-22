@@ -1,0 +1,26 @@
+// =====================================================================
+// قواعد LuxeBloom فقط
+// هاد الملف ما بينرفع تلقائياً. انسخ البلوك تحت والزقه في Firebase Console > Firestore > Rules
+// جوا  match /databases/{database}/documents { ... }  وتحت قواعد التطبيقات الثانية، بدون ما تغير إشي فيها.
+// =====================================================================
+
+    function isLuxeMember() {
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/luxe_members/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/luxe_members/$(request.auth.uid)).data.get('active', true) != false;
+    }
+
+    match /luxe_members/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /{luxeCollection}/{docId} {
+      allow read: if isLuxeMember() && luxeCollection in [
+        'products', 'categories', 'sales', 'purchases', 'expenses',
+        'customers', 'suppliers', 'accounts', 'journalEntries',
+        'partners', 'partnerTransactions', 'customerPayments',
+        'supplierPayments', 'inventoryLogs', 'settings'
+      ];
+      allow write: if false;
+    }

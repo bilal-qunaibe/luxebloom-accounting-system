@@ -5,6 +5,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription,
 } from '@/components/ui/dialog'
+import { callAction, fetchAllDocs, useDataRefresh } from '@/lib/db'
 
 // القائمة المحدثة بالفئات الجديدة
 const PRODUCT_CATEGORIES = [
@@ -13,75 +14,7 @@ const PRODUCT_CATEGORIES = [
   { id: '7', name: 'ساعة' }, { id: '8', name: 'علب وتغليفات' }
 ]
 
-const PROJECT_ID = 'manasra-32b5e';
-import.meta.env.VITE_FIREBASE_API_KEY
-const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-
-function parseFirestoreDoc(doc: any) {
-  const id = doc.name.split('/').pop();
-  const fields = doc.fields || {};
-  const data: any = { id };
-  
-  for (const key in fields) {
-    const valObj = fields[key];
-    if ('stringValue' in valObj) data[key] = valObj.stringValue;
-    else if ('integerValue' in valObj) data[key] = parseInt(valObj.integerValue);
-    else if ('doubleValue' in valObj) data[key] = parseFloat(valObj.doubleValue);
-    else if ('booleanValue' in valObj) data[key] = valObj.booleanValue;
-    else if ('arrayValue' in valObj) {
-      const values = valObj.arrayValue.values || [];
-      data[key] = values.map((v: any) => {
-        if (v.mapValue) {
-          const mFields = v.mapValue.fields || {};
-          const item: any = {};
-          for (const mk in mFields) {
-            if ('stringValue' in mFields[mk]) item[mk] = mFields[mk].stringValue;
-            if ('integerValue' in mFields[mk]) item[mk] = parseInt(mFields[mk].integerValue);
-          }
-          return item;
-        }
-        return v;
-      });
-    }
-  }
-  return data;
-}
-
-// دالة التحويل المعدلة لتكون مضادة للأخطاء والفراغات
-function toFirestoreFields(obj: any) {
-  const fields: any = {};
-  for (const key in obj) {
-    const val = obj[key];
-    if (val === null || val === undefined) continue;
-    
-    if (typeof val === 'string') {
-      fields[key] = { stringValue: val };
-    } else if (typeof val === 'number') {
-      if (isNaN(val)) fields[key] = { doubleValue: 0 };
-      else if (Number.isInteger(val)) fields[key] = { integerValue: val.toString() };
-      else fields[key] = { doubleValue: val };
-    } else if (typeof val === 'boolean') {
-      fields[key] = { booleanValue: val };
-    } else if (Array.isArray(val)) {
-      fields[key] = {
-        arrayValue: val.length > 0 ? {
-          values: val.map(item => {
-            const mapFields: any = {};
-            for (const mk in item) {
-              if (item[mk] === null || item[mk] === undefined) continue;
-              if (typeof item[mk] === 'string') mapFields[mk] = { stringValue: item[mk] };
-              else if (typeof item[mk] === 'number') mapFields[mk] = { integerValue: (isNaN(item[mk]) ? 0 : item[mk]).toString() };
-              else if (typeof item[mk] === 'boolean') mapFields[mk] = { booleanValue: item[mk] };
-            }
-            return { mapValue: { fields: mapFields } };
-          })
-        } : {} 
-      };
-    }
-  }
-  return fields;
-}
-
+// كل الحفظ والحذف بيمر من السيرفر عشان المخزون والقيود يضلوا متطابقين
 export default function Inventory() {
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
@@ -97,25 +30,7 @@ export default function Inventory() {
   const loadProducts = async () => {
     setIsRefreshing(true)
     try {
-      let allDocs: any[] = [];
-      let pageToken = '';
-      const limitUrl = `${BASE_URL}/products?pageSize=300&key=${API_KEY}`;
-
-      do {
-        const currentUrl = pageToken ? `${limitUrl}&pageToken=${pageToken}` : limitUrl;
-        const res = await fetch(currentUrl)
-        if (res.status === 404) break;
-        if (!res.ok) throw new Error("فشل الجلب");
-        
-        const data = await res.json()
-        if (data.documents) {
-          allDocs = [...allDocs, ...data.documents.map((d: any) => parseFirestoreDoc(d))];
-        }
-        
-        pageToken = data.nextPageToken; 
-      } while (pageToken); 
-
-      setAllProducts(allDocs)
+      setAllProducts(await fetchAllDocs('products'))
     } catch (error) {
       console.error("خطأ في جلب المنتجات:", error)
     } finally {
@@ -125,12 +40,7 @@ export default function Inventory() {
 
   const loadCategories = async () => {
     try {
-      const res = await fetch(`${BASE_URL}/categories?pageSize=100&key=${API_KEY}`)
-      if (res.status === 404) { setCategories([]); return; }
-      if (!res.ok) throw new Error("فشل جلب الفئات");
-      const data = await res.json()
-      const docs = data.documents || []
-      setCategories(docs.map((d: any) => parseFirestoreDoc(d)))
+      setCategories(await fetchAllDocs('categories'))
     } catch (error) {
       console.error("خطأ في جلب الفئات:", error)
     }
@@ -140,6 +50,7 @@ export default function Inventory() {
     loadProducts()
     loadCategories()
   }, [])
+  useDataRefresh(loadProducts)
 
   const products = useMemo(() => {
     return allProducts.filter(p => {
@@ -154,11 +65,11 @@ export default function Inventory() {
   const handleDelete = async (id: string) => {
     if (window.confirm('هل أنت متأكد من حذف هذا المنتج؟')) {
       try {
-        const res = await fetch(`${BASE_URL}/products/${id}?key=${API_KEY}`, { method: 'DELETE' })
-        if (res.ok) loadProducts();
-      } catch (error) {
+        await callAction('product.delete', { id })
+        loadProducts()
+      } catch (error: any) {
         console.error("خطأ في الحذف:", error)
-        alert('حدث خطأ أثناء الحذف')
+        alert(error.message || 'حدث خطأ أثناء الحذف')
       }
     }
   }
@@ -174,7 +85,7 @@ export default function Inventory() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h1 className="page-title">المخزون</h1>
-          <p className="text-white/50 text-sm mt-1">إدارة منتجات الفضة والستانليس ستيل (نظام اتصال آمن)</p>
+          <p className="text-white/50 text-sm mt-1">إدارة منتجات الفضة والستانليس ستيل</p>
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
           <button onClick={loadProducts} className="glass-button flex items-center justify-center p-2.5" title="تحديث البيانات">
@@ -321,7 +232,7 @@ function AddProductForm({ onSuccess, categories, initialData }: { onSuccess: () 
       const cleanVariants = variants.filter(v => v.size.trim() !== '')
       const totalQty = cleanVariants.reduce((sum, v) => sum + (Number(v.quantity) || 0), 0)
       
-      const finalQuantity = cleanVariants.length > 0 ? totalQty : (Number(formData.quantity) || 0);
+      const finalQuantity = cleanVariants.length > 0 ? totalQty : (parseInt(String(formData.quantity)) || 0);
 
       const payload = {
         code: formData.code || '',
@@ -330,7 +241,7 @@ function AddProductForm({ onSuccess, categories, initialData }: { onSuccess: () 
         categoryId: formData.categoryId ? formData.categoryId.toString() : '',
         itemType: formData.itemType || 'SILVER',
         quantity: finalQuantity,
-        variants: cleanVariants, 
+        variants: cleanVariants.map(v => ({ size: v.size.trim(), quantity: parseInt(String(v.quantity)) || 0 })),
         weightGram: parseFloat(formData.weightGram) || 0,
         minQuantity: parseInt(formData.minQuantity) || 0,
         minWeight: parseFloat(formData.minWeight) || 0,
@@ -339,35 +250,16 @@ function AddProductForm({ onSuccess, categories, initialData }: { onSuccess: () 
         wholesalePrice: parseFloat(formData.wholesalePrice) || 0,
         purity: formData.purity || '925',
         isActive: formData.isActive ?? true,
-        createdAt: initialData?.createdAt || new Date().toISOString()
       }
 
-      let url = `${BASE_URL}/products`;
-      let method = 'POST';
-
-      if (initialData && initialData.id) {
-        url = `${BASE_URL}/products/${initialData.id}`;
-        method = 'PATCH'; 
-      }
-
-      const res = await fetch(`${url}?key=${API_KEY}`, {
-        method: method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: toFirestoreFields(payload) })
-      })
-
-      if (!res.ok) {
-        const errData = await res.json();
-        alert("تفاصيل الخطأ من جوجل:\n" + JSON.stringify(errData.error, null, 2));
-        setIsSubmitting(false);
-        return;
-      }
+      // أي تغيير بالكمية أو التكلفة بيعمل قيد تسوية للمخزون تلقائياً
+      await callAction('product.save', { ...payload, id: initialData?.id })
 
       onSuccess()
 
     } catch (error: any) { 
       console.error("خطأ الحفظ:", error)
-      alert("حدث خطأ غير متوقع: " + error.message)
+      alert(error.message || "حدث خطأ غير متوقع")
     } finally { 
       setIsSubmitting(false) 
     }
@@ -423,6 +315,10 @@ function AddProductForm({ onSuccess, categories, initialData }: { onSuccess: () 
         <input value={formData.salePrice || ''} type="number" step="0.01" placeholder="سعر البيع" onChange={(e) => setFormData({ ...formData, salePrice: e.target.value })} className="glass-input w-full" required />
         <input value={formData.weightGram || ''} type="number" step="0.01" placeholder="الوزن (غ)" onChange={(e) => setFormData({ ...formData, weightGram: e.target.value })} className="glass-input w-full" />
       </div>
+      <label className="flex items-center gap-2 text-sm text-white/70 cursor-pointer">
+        <input type="checkbox" checked={formData.isActive !== false} onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })} />
+        منتج نشط (المنتج المعطل ما بيظهر بالبيع)
+      </label>
       <button type="submit" disabled={isSubmitting} className="glass-button w-full mt-4 flex justify-center items-center">
         {isSubmitting ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : initialData ? "حفظ التعديلات" : "إضافة المنتج"}
       </button>

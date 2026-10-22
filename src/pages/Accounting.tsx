@@ -1,100 +1,15 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Plus, BookOpen, TrendingUp, TrendingDown, Scale, X } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { callAction, fetchAllDocs, isCancelled, useDataRefresh } from '@/lib/db'
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts'
 
-const PROJECT_ID = 'manasra-32b5e';
-import.meta.env.VITE_FIREBASE_API_KEY
-const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-
-function parseFirestoreDoc(doc: any) {
-  const id = doc.name.split('/').pop();
-  const fields = doc.fields || {};
-  const data: any = { id };
-  for (const key in fields) {
-    const valObj = fields[key];
-    if ('stringValue' in valObj) data[key] = valObj.stringValue;
-    else if ('integerValue' in valObj) data[key] = parseInt(valObj.integerValue);
-    else if ('doubleValue' in valObj) data[key] = parseFloat(valObj.doubleValue);
-    else if ('booleanValue' in valObj) data[key] = valObj.booleanValue;
-    else if ('arrayValue' in valObj) {
-      const values = valObj.arrayValue.values || [];
-      data[key] = values.map((v: any) => {
-        if (v.mapValue) {
-          const mFields = v.mapValue.fields || {};
-          const item: any = {};
-          for (const mk in mFields) {
-            if ('stringValue' in mFields[mk]) item[mk] = mFields[mk].stringValue;
-            if ('integerValue' in mFields[mk]) item[mk] = parseInt(mFields[mk].integerValue);
-            if ('doubleValue' in mFields[mk]) item[mk] = parseFloat(mFields[mk].doubleValue);
-          }
-          return item;
-        }
-        return v;
-      });
-    }
-  }
-  return data;
-}
-
-function toFirestoreFields(obj: any) {
-  const fields: any = {};
-  for (const key in obj) {
-    const val = obj[key];
-    if (val === null || val === undefined || val === '') continue;
-    if (typeof val === 'string') fields[key] = { stringValue: val };
-    else if (typeof val === 'number') {
-      if (Number.isInteger(val)) fields[key] = { integerValue: val.toString() };
-      else fields[key] = { doubleValue: val };
-    } else if (typeof val === 'boolean') fields[key] = { booleanValue: val };
-    else if (Array.isArray(val)) {
-      fields[key] = {
-        arrayValue: val.length > 0 ? {
-          values: val.map(item => {
-            const mapFields: any = {};
-            for (const mk in item) {
-              if (item[mk] === null || item[mk] === undefined) continue;
-              if (typeof item[mk] === 'string') mapFields[mk] = { stringValue: item[mk] };
-              else if (typeof item[mk] === 'number') {
-                if (Number.isInteger(item[mk])) mapFields[mk] = { integerValue: item[mk].toString() };
-                else mapFields[mk] = { doubleValue: Number(item[mk]) };
-              }
-              else if (typeof item[mk] === 'boolean') mapFields[mk] = { booleanValue: item[mk] };
-            }
-            return { mapValue: { fields: mapFields } };
-          })
-        } : {}
-      };
-    }
-  }
-  return fields;
-}
-
-const fetchAllDocs = async (collectionName: string) => {
-  let allDocs: any[] = [];
-  let pageToken = '';
-  do {
-    const url = pageToken 
-      ? `${BASE_URL}/${collectionName}?pageSize=300&key=${API_KEY}&pageToken=${pageToken}` 
-      : `${BASE_URL}/${collectionName}?pageSize=300&key=${API_KEY}`;
-    
-    const res = await fetch(url);
-    if (res.status === 404) break;
-    const data = await res.json();
-    if (data.documents) {
-      allDocs = [...allDocs, ...data.documents.map(parseFirestoreDoc)];
-    }
-    pageToken = data.nextPageToken;
-  } while (pageToken);
-  return allDocs;
-}
 
 export default function Accounting() {
   const [activeTab, setActiveTab] = useState('accounts')
   const [accounts, setAccounts] = useState<any[]>([])
   const [journalEntries, setJournalEntries] = useState<any[]>([])
   const [sales, setSales] = useState<any[]>([])
-  const [purchases, setPurchases] = useState<any[]>([])
   const [expenses, setExpenses] = useState<any[]>([])
   
   const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -104,18 +19,16 @@ export default function Accounting() {
   const fetchData = async () => {
     setIsLoading(true)
     try {
-      const [accData, jeData, salesData, purData, expData] = await Promise.all([
+      const [accData, jeData, salesData, expData] = await Promise.all([
         fetchAllDocs('accounts'),
         fetchAllDocs('journalEntries'),
         fetchAllDocs('sales'),
-        fetchAllDocs('purchases'),
         fetchAllDocs('expenses')
       ])
 
       setAccounts(accData)
-      setJournalEntries(jeData.sort((a:any, b:any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()))
+      setJournalEntries(jeData.sort((a:any, b:any) => String(b.entryNo || '').localeCompare(String(a.entryNo || '')) || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()))
       setSales(salesData)
-      setPurchases(purData)
       setExpenses(expData)
     } catch (error) {
       console.error("خطأ في جلب البيانات المحاسبية:", error)
@@ -127,16 +40,30 @@ export default function Accounting() {
   useEffect(() => {
     fetchData()
   }, [])
+  useDataRefresh(fetchData)
 
-  const autoRevenue = sales.reduce((sum, s) => sum + (Number(s.total) || Number(s.totalRevenue) || 0), 0)
-  const autoPurchases = purchases.reduce((sum, p) => sum + (Number(p.total) || Number(p.totalCost) || 0), 0)
-  const autoExpenses = expenses.reduce((sum, e) => sum + (Number(e.amount) || Number(e.total) || 0), 0)
-  const totalOut = autoPurchases + autoExpenses
+  const reverseEntry = async (entry: any) => {
+    if (!window.confirm(`إلغاء القيد ${entry.entryNo}؟ رح ينعمل قيد عكسي.`)) return
+    try {
+      await callAction('document.reverse', { kind: 'journal', id: entry.id })
+      fetchData()
+    } catch (err: any) {
+      alert(err.message)
+    }
+  }
+
+  // الربح = المبيعات - تكلفة البضاعة المباعة - المصاريف (المشتريات بتدخل المخزون مش مصروف)
+  const liveSales = sales.filter(s => !isCancelled(s))
+  const autoRevenue = liveSales.reduce((sum, s) => sum + (Number(s.totalRevenue) || Number(s.total) || 0), 0)
+  const autoCost = liveSales.reduce((sum, s) => sum + (Number(s.totalCost) || 0), 0)
+  const autoExpenses = expenses.filter(e => !isCancelled(e)).reduce((sum, e) => sum + (Number(e.amount) || Number(e.total) || 0), 0)
+  const totalOut = autoCost + autoExpenses
   const autoNetProfit = autoRevenue - totalOut
 
   const chartData = [
     { name: 'الإيرادات', value: autoRevenue },
-    { name: 'التكاليف والمصاريف', value: totalOut },
+    { name: 'تكلفة البضاعة', value: autoCost },
+    { name: 'المصاريف', value: autoExpenses },
     { name: 'صافي الربح', value: autoNetProfit },
   ]
 
@@ -186,7 +113,7 @@ export default function Accounting() {
           <div className="flex items-center gap-3"><TrendingUp className="w-5 h-5 text-emerald-400" /><div><p className="text-xs text-white/50">إجمالي المبيعات</p><p className="text-xl font-bold text-emerald-400">{autoRevenue.toLocaleString()} ₪</p></div></div>
         </div>
         <div className="glass-card p-5 border-r-2 border-r-red-500/50">
-          <div className="flex items-center gap-3"><TrendingDown className="w-5 h-5 text-red-400" /><div><p className="text-xs text-white/50">تكاليف ومصاريف</p><p className="text-xl font-bold text-red-400">{totalOut.toLocaleString()} ₪</p></div></div>
+          <div className="flex items-center gap-3"><TrendingDown className="w-5 h-5 text-red-400" /><div><p className="text-xs text-white/50">تكلفة البضاعة + المصاريف</p><p className="text-xl font-bold text-red-400">{totalOut.toLocaleString()} ₪</p></div></div>
         </div>
         <div className="glass-card p-5 border-r-2 border-r-gold-500/50">
           <div className="flex items-center gap-3"><Scale className="w-5 h-5 text-gold-400" /><div><p className="text-xs text-white/50">صافي الربح الفعلي</p><p className="text-xl font-bold text-gold-400">{autoNetProfit.toLocaleString()} ₪</p></div></div>
@@ -245,21 +172,29 @@ export default function Accounting() {
           </div>
           <div className="overflow-x-auto">
             <table className="table-glass min-w-[700px]">
-              <thead><tr><th>رقم القيد</th><th>التاريخ</th><th>الوصف</th><th>مدين</th><th>دائن</th><th>الحالة</th></tr></thead>
+              <thead><tr><th>رقم القيد</th><th>التاريخ</th><th>الوصف</th><th>مدين</th><th>دائن</th><th>الحالة</th><th></th></tr></thead>
               <tbody>
                 {isLoading ? (
-                  <tr><td colSpan={6} className="text-center py-8 text-white/50">جاري التحميل...</td></tr>
+                  <tr><td colSpan={7} className="text-center py-8 text-white/50">جاري التحميل...</td></tr>
                 ) : journalEntries.length === 0 ? (
-                  <tr><td colSpan={6} className="text-center py-8 text-white/40">لا توجد قيود مسجلة</td></tr>
+                  <tr><td colSpan={7} className="text-center py-8 text-white/40">لا توجد قيود مسجلة</td></tr>
                 ) : (
                   journalEntries.map((entry: any) => (
-                    <tr key={entry.id}>
+                    <tr key={entry.id} className={entry.status === 'REVERSED' ? 'opacity-50' : ''}>
                       <td className="font-mono text-gold-400">{entry.entryNo}</td>
-                      <td>{new Date(entry.createdAt).toLocaleDateString('ar-PS')}</td>
+                      <td>{new Date(entry.date || entry.createdAt).toLocaleDateString('ar-PS')}</td>
                       <td>{entry.description}</td>
                       <td className="text-emerald-400">{Number(entry.totalDebit || 0).toLocaleString()} ₪</td>
                       <td className="text-red-400">{Number(entry.totalCredit || 0).toLocaleString()} ₪</td>
-                      <td><span className="badge-success">مرحل</span></td>
+                      <td>
+                        {entry.status === 'REVERSED' ? <span className="badge-danger">ملغي</span> : <span className="badge-success">مرحل</span>}
+                        {entry.source?.type && entry.source.type !== 'manual' && <span className="text-[10px] text-white/40 mr-2">تلقائي</span>}
+                      </td>
+                      <td>
+                        {entry.status !== 'REVERSED' && (!entry.source?.type || entry.source.type === 'manual') && (
+                          <button onClick={() => reverseEntry(entry)} className="text-[11px] px-2 py-1 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20">إلغاء</button>
+                        )}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -319,20 +254,11 @@ function AccountForm({ onSuccess }: { onSuccess: () => void }) {
     e.preventDefault(); 
     setIsSubmitting(true)
     try {
-      const accountData = {
-        ...formData,
-        openingBalance: Number(formData.openingBalance) || 0
-      }
-      const res = await fetch(`${BASE_URL}/accounts?key=${API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: toFirestoreFields(accountData) })
-      })
-      if (!res.ok) throw new Error("فشل الحفظ")
+      await callAction('account.create', { ...formData, openingBalance: Number(formData.openingBalance) || 0 })
       onSuccess() 
-    } catch (error) { 
+    } catch (error: any) { 
       console.error(error)
-      alert("حدث خطأ أثناء حفظ الحساب")
+      alert(error.message || "حدث خطأ أثناء حفظ الحساب")
     } finally { 
       setIsSubmitting(false) 
     }
@@ -364,27 +290,22 @@ function JournalEntryForm({ onSuccess, accounts }: { onSuccess: () => void, acco
   const handleSubmit = async () => {
     setIsSubmitting(true)
     try {
-      const jeData = { 
-        entryNo: formData.entryNo || `JE-${Date.now().toString().slice(-6)}`, 
-        description: formData.description, 
-        reference: formData.reference, 
-        items, 
-        totalDebit, 
-        totalCredit, 
-        createdAt: new Date().toISOString() 
-      }
-      
-      const res = await fetch(`${BASE_URL}/journalEntries?key=${API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: toFirestoreFields(jeData) })
+      // السيرفر بيتحقق من توازن القيد ووجود الحسابات وبيعطيه رقم تسلسلي
+      await callAction('journal.create', {
+        entryNo: formData.entryNo,
+        description: formData.description,
+        reference: formData.reference,
+        items: items.map(i => ({
+          debitAccountId: i.debitAccountId || undefined,
+          creditAccountId: i.creditAccountId || undefined,
+          debit: Number(i.debit) || 0,
+          credit: Number(i.credit) || 0,
+        })),
       })
-
-      if (!res.ok) throw new Error("فشل حفظ القيد")
       onSuccess()
-    } catch (error) { 
+    } catch (error: any) { 
       console.error(error)
-      alert("حدث خطأ أثناء الحفظ")
+      alert(error.message || "حدث خطأ أثناء الحفظ")
     } finally { 
       setIsSubmitting(false) 
     }

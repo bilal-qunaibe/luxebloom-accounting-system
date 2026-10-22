@@ -1,74 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Plus, Search, Eye, X, ChevronDown } from 'lucide-react'
+import { Plus, Search, Eye, X, ChevronDown, Ban } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-
-const PROJECT_ID = 'manasra-32b5e';
-import.meta.env.VITE_FIREBASE_API_KEY
-const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-
-// دوال التحويل الذكية
-function parseFirestoreDoc(doc: any) {
-  const id = doc.name.split('/').pop();
-  const fields = doc.fields || {};
-  const data: any = { id };
-  for (const key in fields) {
-    const valObj = fields[key];
-    if ('stringValue' in valObj) data[key] = valObj.stringValue;
-    else if ('integerValue' in valObj) data[key] = parseInt(valObj.integerValue);
-    else if ('doubleValue' in valObj) data[key] = parseFloat(valObj.doubleValue);
-    else if ('booleanValue' in valObj) data[key] = valObj.booleanValue;
-    else if ('arrayValue' in valObj) {
-      const values = valObj.arrayValue.values || [];
-      data[key] = values.map((v: any) => {
-        if (v.mapValue) {
-          const mFields = v.mapValue.fields || {};
-          const item: any = {};
-          for (const mk in mFields) {
-            if ('stringValue' in mFields[mk]) item[mk] = mFields[mk].stringValue;
-            if ('integerValue' in mFields[mk]) item[mk] = parseInt(mFields[mk].integerValue);
-            if ('doubleValue' in mFields[mk]) item[mk] = parseFloat(mFields[mk].doubleValue);
-          }
-          return item;
-        }
-        return v;
-      });
-    }
-  }
-  return data;
-}
-
-function toFirestoreFields(obj: any) {
-  const fields: any = {};
-  for (const key in obj) {
-    const val = obj[key];
-    if (val === null || val === undefined) continue;
-    if (typeof val === 'string') fields[key] = { stringValue: val };
-    else if (typeof val === 'number') {
-      if (Number.isInteger(val)) fields[key] = { integerValue: val.toString() };
-      else fields[key] = { doubleValue: val };
-    } else if (typeof val === 'boolean') fields[key] = { booleanValue: val };
-    else if (Array.isArray(val)) {
-      fields[key] = {
-        arrayValue: val.length > 0 ? {
-          values: val.map(item => {
-            const mapFields: any = {};
-            for (const mk in item) {
-              if (item[mk] === null || item[mk] === undefined) continue;
-              if (typeof item[mk] === 'string') mapFields[mk] = { stringValue: item[mk] };
-              else if (typeof item[mk] === 'number') {
-                if (Number.isInteger(item[mk])) mapFields[mk] = { integerValue: item[mk].toString() };
-                else mapFields[mk] = { doubleValue: Number(item[mk]) };
-              }
-              else if (typeof item[mk] === 'boolean') mapFields[mk] = { booleanValue: item[mk] };
-            }
-            return { mapValue: { fields: mapFields } };
-          })
-        } : {}
-      };
-    }
-  }
-  return fields;
-}
+import { callAction, fetchAllDocs, isCancelled, byNewest, PAYMENT_METHODS, useDataRefresh } from '@/lib/db'
 
 export default function Sales() {
   const [search, setSearch] = useState('')
@@ -77,43 +10,19 @@ export default function Sales() {
   const [products, setProducts] = useState<any[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
+  const [customers, setCustomers] = useState<any[]>([])
+
   const fetchData = async () => {
     setIsLoading(true)
     try {
-      // 1. جلب المنتجات بشكل لا نهائي
-      let allProds: any[] = [];
-      let prodToken = '';
-      const prodLimitUrl = `${BASE_URL}/products?pageSize=300&key=${API_KEY}`;
-      do {
-        const url = prodToken ? `${prodLimitUrl}&pageToken=${prodToken}` : prodLimitUrl;
-        const res = await fetch(url)
-        if (res.status === 404) break;
-        if (!res.ok) throw new Error("فشل الجلب");
-        const data = await res.json()
-        if (data.documents) {
-          allProds = [...allProds, ...data.documents.map((d: any) => parseFirestoreDoc(d))];
-        }
-        prodToken = data.nextPageToken;
-      } while (prodToken);
-      setProducts(allProds);
-
-      // 2. جلب المبيعات بشكل لا نهائي
-      let allSales: any[] = [];
-      let salesToken = '';
-      const salesLimitUrl = `${BASE_URL}/sales?pageSize=300&key=${API_KEY}`;
-      do {
-        const url = salesToken ? `${salesLimitUrl}&pageToken=${salesToken}` : salesLimitUrl;
-        const res = await fetch(url)
-        if (res.status === 404) break;
-        if (!res.ok) throw new Error("فشل الجلب");
-        const data = await res.json()
-        if (data.documents) {
-          allSales = [...allSales, ...data.documents.map((d: any) => parseFirestoreDoc(d))];
-        }
-        salesToken = data.nextPageToken;
-      } while (salesToken);
-      setInvoices(allSales);
-
+      const [allProds, allSales, allCustomers] = await Promise.all([
+        fetchAllDocs('products'),
+        fetchAllDocs('sales'),
+        fetchAllDocs('customers'),
+      ])
+      setProducts(allProds)
+      setInvoices(allSales)
+      setCustomers(allCustomers)
     } catch (error) {
       console.error("خطأ في الجلب:", error)
     } finally {
@@ -121,13 +30,25 @@ export default function Sales() {
     }
   }
 
+  const handleCancel = async (inv: any) => {
+    const reason = window.prompt(`سبب إلغاء الفاتورة ${inv.invoiceNo}؟ (رح ترجع الكميات للمخزون وينعمل قيد عكسي)`)
+    if (reason === null) return
+    try {
+      await callAction('document.reverse', { kind: 'sale', id: inv.id, reason })
+      fetchData()
+    } catch (err: any) {
+      alert(err.message)
+    }
+  }
+
   useEffect(() => {
     fetchData()
   }, [])
+  useDataRefresh(fetchData)
 
   const filteredInvoices = invoices
     .filter(inv => inv.invoiceNo?.toLowerCase().includes(search.toLowerCase()) || inv.customerName?.includes(search))
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    .sort(byNewest);
 
   return (
     <div className="space-y-6">
@@ -149,6 +70,7 @@ export default function Sales() {
             <SalesInvoiceForm 
               onSuccess={() => { setIsDialogOpen(false); fetchData(); }} 
               products={products} 
+              customers={customers}
             />
           </DialogContent>
         </Dialog>
@@ -182,15 +104,15 @@ export default function Sales() {
               <tr><td colSpan={8} className="text-center py-8 text-white/40">لا توجد فواتير مطابقة</td></tr>
             ) : (
               filteredInvoices.map((inv: any) => (
-                <tr key={inv.id}>
+                <tr key={inv.id} className={isCancelled(inv) ? 'opacity-50' : ''}>
                   <td className="font-mono text-gold-400">{inv.invoiceNo}</td>
                   <td>{inv.customerName || 'عميل نقدي'}</td>
                   <td>{new Date(inv.createdAt).toLocaleDateString('ar-PS')}</td>
                   <td className="text-gold-400 font-medium">{Number(inv.totalRevenue || 0).toLocaleString()} ₪</td>
                   <td className="text-emerald-400 font-medium">{Number(inv.netProfit || 0).toLocaleString()} ₪</td>
                   <td>{Number(inv.paid || 0).toLocaleString()} ₪</td>
-                  <td><span className="badge-success">مؤكدة</span></td>
-                  <td>
+                  <td>{isCancelled(inv) ? <span className="badge-danger">ملغاة</span> : <span className="badge-success">مؤكدة</span>}</td>
+                  <td className="flex items-center gap-2">
                     <Dialog>
                       <DialogTrigger asChild>
                         <button className="w-8 h-8 rounded-lg bg-white/[0.06] flex items-center justify-center hover:bg-white/[0.1] transition-colors">
@@ -204,6 +126,11 @@ export default function Sales() {
                         <InvoiceDetails invoice={inv} />
                       </DialogContent>
                     </Dialog>
+                    {!isCancelled(inv) && (
+                      <button onClick={() => handleCancel(inv)} title="إلغاء الفاتورة" className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center hover:bg-red-500/20 transition-colors">
+                        <Ban className="w-3.5 h-3.5 text-red-400" />
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))
@@ -215,7 +142,7 @@ export default function Sales() {
   )
 }
 
-function SalesInvoiceForm({ onSuccess, products }: { onSuccess: () => void, products: any[] }) {
+function SalesInvoiceForm({ onSuccess, products, customers }: { onSuccess: () => void, products: any[], customers: any[] }) {
   const [isPending, setIsPending] = useState(false)
   const [items, setItems] = useState<Array<{ 
     itemType: string; 
@@ -229,6 +156,7 @@ function SalesInvoiceForm({ onSuccess, products }: { onSuccess: () => void, prod
   }>>([])
   
   const [paymentMethod, setPaymentMethod] = useState('CASH')
+  const [customerId, setCustomerId] = useState('')
   const [notes, setNotes] = useState('')
   const [paid, setPaid] = useState(0)
 
@@ -273,7 +201,6 @@ function SalesInvoiceForm({ onSuccess, products }: { onSuccess: () => void, prod
 
   const totalRevenue = items.reduce((sum, item) => sum + item.total, 0)
   const totalCost = items.reduce((sum, item) => sum + (item.quantity * item.purchasePrice), 0)
-  const netProfit = totalRevenue - totalCost
 
   useEffect(() => {
     setPaid(totalRevenue)
@@ -306,66 +233,23 @@ function SalesInvoiceForm({ onSuccess, products }: { onSuccess: () => void, prod
       }
     }
     
+    if (paid > totalRevenue) return alert("المبلغ المدفوع أكبر من قيمة الفاتورة")
+    if (paid < totalRevenue && !customerId) return alert("في مبلغ متبقي، اختار العميل عشان ينسجل عليه كدين")
+
     setIsPending(true)
     try {
-      const invoiceNo = `INV-${Date.now().toString().slice(-6)}`
-      
-      const invoiceData = {
-        invoiceNo,
-        customerName: 'عميل نقدي',
-        items,
-        totalRevenue,
-        totalCost,
-        netProfit,
+      // السيرفر بيخصم المخزون ويعمل القيود ويسجل الدين بعملية وحدة
+      await callAction('sale.create', {
+        items: items.map(i => ({ productId: i.productId, size: i.size, quantity: i.quantity, unitPrice: i.unitPrice })),
+        customerId: customerId || undefined,
         paid,
         paymentMethod,
         notes,
-        createdAt: new Date().toISOString()
-      }
-
-      // 1. حفظ الفاتورة
-      const invoiceRes = await fetch(`${BASE_URL}/sales?key=${API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: toFirestoreFields(invoiceData) })
       })
-
-      if (!invoiceRes.ok) throw new Error("فشل حفظ الفاتورة")
-
-      // 2. تحديث وخصم المخزون بنظام updateMask لضمان القبول
-      for (const item of items) {
-        const productData = products.find(p => p.id === item.productId)
-        if (!productData) continue;
-
-        const newQuantity = (Number(productData.quantity) || 0) - item.quantity
-        const hasSizes = productData.variants && productData.variants.length > 0;
-        
-        let updateFields: any = { quantity: newQuantity }
-        let updateUrl = `${BASE_URL}/products/${item.productId}?key=${API_KEY}&updateMask.fieldPaths=quantity`
-
-        if (hasSizes && item.size) {
-          updateFields.variants = productData.variants.map((v: any) => {
-            if (v.size === item.size) return { ...v, quantity: (Number(v.quantity) || 0) - item.quantity }
-            return v
-          })
-          updateUrl += `&updateMask.fieldPaths=variants`
-        }
-
-        const updateRes = await fetch(updateUrl, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fields: toFirestoreFields(updateFields) })
-        })
-
-        if (!updateRes.ok) {
-           console.error("خطأ في خصم المنتج من المخزون", await updateRes.text())
-        }
-      }
-
       onSuccess()
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error creating sale: ", error)
-      alert("حدث خطأ أثناء حفظ الفاتورة")
+      alert(error.message || "حدث خطأ أثناء حفظ الفاتورة")
     } finally {
       setIsPending(false)
     }
@@ -373,13 +257,18 @@ function SalesInvoiceForm({ onSuccess, products }: { onSuccess: () => void, prod
 
   return (
     <div className="space-y-6 mt-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div>
+          <label className="block text-sm text-white/60 mb-1">العميل</label>
+          <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} className="glass-input w-full">
+            <option value="">عميل نقدي</option>
+            {customers.map((c: any) => <option key={c.id} value={c.id}>{c.name}{c.phone ? ` - ${c.phone}` : ''}</option>)}
+          </select>
+        </div>
         <div>
           <label className="block text-sm text-white/60 mb-1">طريقة الدفع</label>
           <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} className="glass-input w-full">
-            <option value="CASH">نقدي</option>
-            <option value="BANK_TRANSFER">تحويل بنكي</option>
-            <option value="CREDIT_CARD">بطاقة ائتمان</option>
+            {PAYMENT_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
         </div>
         <div>
@@ -404,7 +293,7 @@ function SalesInvoiceForm({ onSuccess, products }: { onSuccess: () => void, prod
               const availableSizes = selectedProduct?.variants || []
               
               const availableProductsList = products.filter(p => 
-                (item.itemType ? p.itemType === item.itemType : true) && Number(p.quantity) > 0
+                (item.itemType ? p.itemType === item.itemType : true) && Number(p.quantity) > 0 && p.isActive !== false
               )
 
               return (
@@ -520,7 +409,8 @@ function SalesInvoiceForm({ onSuccess, products }: { onSuccess: () => void, prod
         <div>
           <p className="text-sm text-white/60">الإجمالي النهائي</p>
           <p className="text-3xl font-bold text-gold-400">{totalRevenue.toLocaleString()} شيكل</p>
-          {(totalRevenue - paid) > 0 && <p className="text-sm text-red-400 mt-1">المتبقي على العميل: {(totalRevenue - paid).toLocaleString()} شيكل</p>}
+          {(totalRevenue - paid) > 0 && <p className="text-sm text-red-400 mt-1">المتبقي على العميل: {(totalRevenue - paid).toLocaleString()} شيكل {!customerId && '(اختار العميل)'}</p>}
+          {items.length > 0 && <p className="text-xs text-emerald-400/80 mt-1">الربح المتوقع: {(totalRevenue - totalCost).toLocaleString()} شيكل</p>}
         </div>
         <button onClick={handleSubmit} className="glass-button w-full sm:w-auto px-8 py-3 text-lg mt-4 sm:mt-0" disabled={isPending || items.length === 0}>
           {isPending ? 'جاري الحفظ والخصم...' : 'تأكيد وحفظ الفاتورة'}
@@ -535,8 +425,9 @@ function InvoiceDetails({ invoice }: { invoice: any }) {
     <div className="space-y-4 mt-4">
       <div className="grid grid-cols-2 gap-4">
         <div className="glass p-3 rounded-lg">
-          <p className="text-xs text-white/50">رقم الفاتورة</p>
+          <p className="text-xs text-white/50">رقم الفاتورة / العميل</p>
           <p className="text-sm font-medium text-gold-400">{invoice.invoiceNo}</p>
+          <p className="text-xs text-white/70 mt-1">{invoice.customerName || 'عميل نقدي'}</p>
         </div>
         <div className="glass p-3 rounded-lg">
           <p className="text-xs text-white/50">تاريخ البيع</p>
@@ -592,6 +483,13 @@ function InvoiceDetails({ invoice }: { invoice: any }) {
         )}
       </div>
       
+      {isCancelled(invoice) && (
+        <div className="bg-red-500/10 p-3 rounded border border-red-500/20 text-sm text-red-300">
+          ملغاة{invoice.cancelReason ? `: ${invoice.cancelReason}` : ''}
+        </div>
+      )}
+      {invoice.origin === 'assistant' && <p className="text-[11px] text-white/40">أضيفت عن طريق المساعد</p>}
+
       <div className="bg-black/30 p-3 rounded border border-emerald-500/20 flex justify-between items-center">
         <span className="text-xs text-white/50">صافي الربح المُسجل في هذه الفاتورة:</span>
         <span className="text-sm font-bold text-emerald-400">{Number(invoice.netProfit || 0).toLocaleString()} ₪</span>

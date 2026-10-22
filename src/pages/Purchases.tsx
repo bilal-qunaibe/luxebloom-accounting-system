@@ -1,74 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Plus, Search, Eye, X, ChevronDown } from 'lucide-react'
+import { Plus, Search, Eye, X, ChevronDown, Ban } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-
-const PROJECT_ID = 'manasra-32b5e';
-import.meta.env.VITE_FIREBASE_API_KEY
-const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-
-// دوال التحويل الذكية
-function parseFirestoreDoc(doc: any) {
-  const id = doc.name.split('/').pop();
-  const fields = doc.fields || {};
-  const data: any = { id };
-  for (const key in fields) {
-    const valObj = fields[key];
-    if ('stringValue' in valObj) data[key] = valObj.stringValue;
-    else if ('integerValue' in valObj) data[key] = parseInt(valObj.integerValue);
-    else if ('doubleValue' in valObj) data[key] = parseFloat(valObj.doubleValue);
-    else if ('booleanValue' in valObj) data[key] = valObj.booleanValue;
-    else if ('arrayValue' in valObj) {
-      const values = valObj.arrayValue.values || [];
-      data[key] = values.map((v: any) => {
-        if (v.mapValue) {
-          const mFields = v.mapValue.fields || {};
-          const item: any = {};
-          for (const mk in mFields) {
-            if ('stringValue' in mFields[mk]) item[mk] = mFields[mk].stringValue;
-            if ('integerValue' in mFields[mk]) item[mk] = parseInt(mFields[mk].integerValue);
-            if ('doubleValue' in mFields[mk]) item[mk] = parseFloat(mFields[mk].doubleValue);
-          }
-          return item;
-        }
-        return v;
-      });
-    }
-  }
-  return data;
-}
-
-function toFirestoreFields(obj: any) {
-  const fields: any = {};
-  for (const key in obj) {
-    const val = obj[key];
-    if (val === null || val === undefined) continue;
-    if (typeof val === 'string') fields[key] = { stringValue: val };
-    else if (typeof val === 'number') {
-      if (Number.isInteger(val)) fields[key] = { integerValue: val.toString() };
-      else fields[key] = { doubleValue: val };
-    } else if (typeof val === 'boolean') fields[key] = { booleanValue: val };
-    else if (Array.isArray(val)) {
-      fields[key] = {
-        arrayValue: val.length > 0 ? {
-          values: val.map(item => {
-            const mapFields: any = {};
-            for (const mk in item) {
-              if (item[mk] === null || item[mk] === undefined) continue;
-              if (typeof item[mk] === 'string') mapFields[mk] = { stringValue: item[mk] };
-              else if (typeof item[mk] === 'number') {
-                if (Number.isInteger(item[mk])) mapFields[mk] = { integerValue: item[mk].toString() };
-                else mapFields[mk] = { doubleValue: Number(item[mk]) };
-              }
-              else if (typeof item[mk] === 'boolean') mapFields[mk] = { booleanValue: item[mk] };
-            }
-            return { mapValue: { fields: mapFields } };
-          })
-        } : {}
-      };
-    }
-  }
-  return fields;
-}
+import { callAction, fetchAllDocs, isCancelled, byNewest, PAYMENT_METHODS, CURRENCIES, useDataRefresh } from '@/lib/db'
 
 export default function Purchases() {
   const [search, setSearch] = useState('')
@@ -77,43 +10,19 @@ export default function Purchases() {
   const [products, setProducts] = useState<any[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
+  const [suppliers, setSuppliers] = useState<any[]>([])
+
   const fetchData = async () => {
     setIsLoading(true)
     try {
-      // 1. جلب المنتجات بشكل لا نهائي
-      let allProds: any[] = [];
-      let prodToken = '';
-      const prodLimitUrl = `${BASE_URL}/products?pageSize=300&key=${API_KEY}`;
-      do {
-        const url = prodToken ? `${prodLimitUrl}&pageToken=${prodToken}` : prodLimitUrl;
-        const res = await fetch(url)
-        if (res.status === 404) break;
-        if (!res.ok) throw new Error("فشل الجلب");
-        const data = await res.json()
-        if (data.documents) {
-          allProds = [...allProds, ...data.documents.map((d: any) => parseFirestoreDoc(d))];
-        }
-        prodToken = data.nextPageToken;
-      } while (prodToken);
-      setProducts(allProds);
-
-      // 2. جلب المشتريات بشكل لا نهائي
-      let allPurchases: any[] = [];
-      let purToken = '';
-      const purLimitUrl = `${BASE_URL}/purchases?pageSize=300&key=${API_KEY}`;
-      do {
-        const url = purToken ? `${purLimitUrl}&pageToken=${purToken}` : purLimitUrl;
-        const res = await fetch(url)
-        if (res.status === 404) break;
-        if (!res.ok) throw new Error("فشل الجلب");
-        const data = await res.json()
-        if (data.documents) {
-          allPurchases = [...allPurchases, ...data.documents.map((d: any) => parseFirestoreDoc(d))];
-        }
-        purToken = data.nextPageToken;
-      } while (purToken);
-      setInvoices(allPurchases);
-
+      const [allProds, allPurchases, allSuppliers] = await Promise.all([
+        fetchAllDocs('products'),
+        fetchAllDocs('purchases'),
+        fetchAllDocs('suppliers'),
+      ])
+      setProducts(allProds)
+      setInvoices(allPurchases)
+      setSuppliers(allSuppliers)
     } catch (error) {
       console.error("خطأ في الجلب:", error)
     } finally {
@@ -121,13 +30,25 @@ export default function Purchases() {
     }
   }
 
+  const handleCancel = async (inv: any) => {
+    const reason = window.prompt(`سبب إلغاء فاتورة الشراء ${inv.invoiceNo}؟ (رح تنخصم الكميات من المخزون وينعمل قيد عكسي)`)
+    if (reason === null) return
+    try {
+      await callAction('document.reverse', { kind: 'purchase', id: inv.id, reason })
+      fetchData()
+    } catch (err: any) {
+      alert(err.message)
+    }
+  }
+
   useEffect(() => {
     fetchData()
   }, [])
+  useDataRefresh(fetchData)
 
   const filteredInvoices = invoices
     .filter(inv => inv.invoiceNo?.toLowerCase().includes(search.toLowerCase()) || inv.supplierName?.includes(search))
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    .sort(byNewest);
 
   return (
     <div className="space-y-6">
@@ -149,6 +70,7 @@ export default function Purchases() {
             <PurchaseInvoiceForm 
               onSuccess={() => { setIsDialogOpen(false); fetchData(); }} 
               products={products} 
+              suppliers={suppliers}
             />
           </DialogContent>
         </Dialog>
@@ -182,7 +104,7 @@ export default function Purchases() {
               <tr><td colSpan={8} className="text-center py-8 text-white/40">لا توجد فواتير مطابقة</td></tr>
             ) : (
               filteredInvoices.map((inv: any) => (
-                <tr key={inv.id}>
+                <tr key={inv.id} className={isCancelled(inv) ? 'opacity-50' : ''}>
                   <td className="font-mono text-emerald-400">{inv.invoiceNo}</td>
                   <td>{inv.supplierName || 'مورد عام'}</td>
                   <td>{new Date(inv.createdAt).toLocaleDateString('ar-PS')}</td>
@@ -191,8 +113,8 @@ export default function Purchases() {
                   <td className={(inv.totalCost - inv.paid) > 0 ? 'text-red-400' : 'text-emerald-400'}>
                     {Number((inv.totalCost || 0) - (inv.paid || 0)).toLocaleString()} ₪
                   </td>
-                  <td><span className="badge-success">مستلمة</span></td>
-                  <td>
+                  <td>{isCancelled(inv) ? <span className="badge-danger">ملغاة</span> : <span className="badge-success">مستلمة</span>}</td>
+                  <td className="flex items-center gap-2">
                     <Dialog>
                       <DialogTrigger asChild>
                         <button className="w-8 h-8 rounded-lg bg-white/[0.06] flex items-center justify-center hover:bg-white/[0.1] transition-colors">
@@ -206,6 +128,11 @@ export default function Purchases() {
                         <PurchaseDetails invoice={inv} />
                       </DialogContent>
                     </Dialog>
+                    {!isCancelled(inv) && (
+                      <button onClick={() => handleCancel(inv)} title="إلغاء الفاتورة" className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center hover:bg-red-500/20 transition-colors">
+                        <Ban className="w-3.5 h-3.5 text-red-400" />
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))
@@ -217,7 +144,7 @@ export default function Purchases() {
   )
 }
 
-function PurchaseInvoiceForm({ onSuccess, products }: { onSuccess: () => void, products: any[] }) {
+function PurchaseInvoiceForm({ onSuccess, products, suppliers }: { onSuccess: () => void, products: any[], suppliers: any[] }) {
   const [isPending, setIsPending] = useState(false)
   const [items, setItems] = useState<Array<{ 
     itemType: string; 
@@ -230,6 +157,8 @@ function PurchaseInvoiceForm({ onSuccess, products }: { onSuccess: () => void, p
   }>>([])
   
   const [supplierName, setSupplierName] = useState('')
+  const [supplierId, setSupplierId] = useState('')
+  const [currency, setCurrency] = useState('ILS')
   const [paymentMethod, setPaymentMethod] = useState('CASH')
   const [notes, setNotes] = useState('')
   const [paid, setPaid] = useState(0)
@@ -290,84 +219,55 @@ function PurchaseInvoiceForm({ onSuccess, products }: { onSuccess: () => void, p
     })
     if (missingSize) return alert("الرجاء تحديد المقاس لجميع المنتجات التي تمتلك مقاسات!")
     
+    if (paid > totalCost) return alert("المبلغ المدفوع أكبر من قيمة الفاتورة")
+    if (paid < totalCost && !supplierId) return alert("في مبلغ متبقي للمورد، اختاره من القائمة عشان ينسجل الدين")
+
     setIsPending(true)
     try {
-      const invoiceNo = `PUR-${Date.now().toString().slice(-6)}`
-      
-      const invoiceData = {
-        invoiceNo,
-        supplierName: supplierName || 'مورد عام',
-        items,
-        totalCost,
+      // السيرفر بيزيد المخزون ويحدث متوسط التكلفة ويعمل القيد بعملية وحدة
+      await callAction('purchase.create', {
+        items: items.map(i => ({ productId: i.productId, size: i.size, quantity: i.quantity, unitCost: i.unitCost })),
+        supplierId: supplierId || undefined,
+        supplierName,
         paid,
+        currency,
         paymentMethod,
         notes,
-        createdAt: new Date().toISOString()
-      }
-
-      // 1. حفظ فاتورة المشتريات
-      const invoiceRes = await fetch(`${BASE_URL}/purchases?key=${API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: toFirestoreFields(invoiceData) })
       })
-
-      if (!invoiceRes.ok) throw new Error("فشل حفظ الفاتورة")
-
-      // 2. تحديث المخزون (زيادة الكميات) بنظام updateMask
-      for (const item of items) {
-        const productData = products.find(p => p.id === item.productId)
-        if (!productData) continue;
-
-        // العملية هنا إضافة (+) وليست طرح
-        const newQuantity = (Number(productData.quantity) || 0) + item.quantity
-        const hasSizes = productData.variants && productData.variants.length > 0;
-        
-        let updateFields: any = { quantity: newQuantity }
-        let updateUrl = `${BASE_URL}/products/${item.productId}?key=${API_KEY}&updateMask.fieldPaths=quantity`
-
-        if (hasSizes && item.size) {
-          updateFields.variants = productData.variants.map((v: any) => {
-            // زيادة كمية المقاس المحدد
-            if (v.size === item.size) return { ...v, quantity: (Number(v.quantity) || 0) + item.quantity }
-            return v
-          })
-          updateUrl += `&updateMask.fieldPaths=variants`
-        }
-
-        const updateRes = await fetch(updateUrl, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fields: toFirestoreFields(updateFields) })
-        })
-
-        if (!updateRes.ok) {
-           console.error("خطأ في تحديث المخزون", await updateRes.text())
-        }
-      }
-
       onSuccess()
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error creating purchase: ", error)
-      alert("حدث خطأ أثناء حفظ الفاتورة")
+      alert(error.message || "حدث خطأ أثناء حفظ الفاتورة")
     } finally {
       setIsPending(false)
     }
   }
 
+  const currencyLabel = CURRENCIES.find(c => c.value === currency)?.label || 'شيكل'
+
   return (
     <div className="space-y-6 mt-4">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <div>
-          <label className="block text-sm text-white/60 mb-1">اسم المورد</label>
-          <input value={supplierName} onChange={(e) => setSupplierName(e.target.value)} className="glass-input w-full" placeholder="مورد عام..." />
+          <label className="block text-sm text-white/60 mb-1">المورد</label>
+          <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} className="glass-input w-full">
+            <option value="">مورد غير مسجل</option>
+            {suppliers.map((s: any) => <option key={s.id} value={s.id}>{s.name}{s.company ? ` - ${s.company}` : ''}</option>)}
+          </select>
+          {!supplierId && (
+            <input value={supplierName} onChange={(e) => setSupplierName(e.target.value)} className="glass-input w-full mt-2" placeholder="اسم المورد (اختياري)" />
+          )}
+        </div>
+        <div>
+          <label className="block text-sm text-white/60 mb-1">عملة الفاتورة</label>
+          <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="glass-input w-full">
+            {CURRENCIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
         </div>
         <div>
           <label className="block text-sm text-white/60 mb-1">طريقة الدفع</label>
           <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} className="glass-input w-full">
-            <option value="CASH">نقدي</option>
-            <option value="BANK_TRANSFER">تحويل بنكي</option>
-            <option value="CREDIT_CARD">بطاقة ائتمان</option>
+            {PAYMENT_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
           </select>
         </div>
         <div>
@@ -468,7 +368,7 @@ function PurchaseInvoiceForm({ onSuccess, products }: { onSuccess: () => void, p
                     </div>
 
                     <div className="col-span-2">
-                      <label className="text-[10px] text-white/40 mb-1 block">تكلفة الشراء للقطعة</label>
+                      <label className="text-[10px] text-white/40 mb-1 block">تكلفة القطعة ({currencyLabel})</label>
                       <input type="number" value={item.unitCost} onChange={(e) => updateItem(index, 'unitCost', parseFloat(e.target.value) || 0)} className="glass-input w-full text-xs" />
                     </div>
 
@@ -497,8 +397,9 @@ function PurchaseInvoiceForm({ onSuccess, products }: { onSuccess: () => void, p
       <div className="glass p-5 rounded-xl border border-emerald-500/20 flex flex-col sm:flex-row items-center justify-between mt-6 bg-gradient-to-l from-emerald-500/10 to-transparent">
         <div>
           <p className="text-sm text-white/60">إجمالي فاتورة الشراء</p>
-          <p className="text-3xl font-bold text-emerald-400">{totalCost.toLocaleString()} شيكل</p>
-          {(totalCost - paid) > 0 && <p className="text-sm text-red-400 mt-1">الدين المتبقي للمورد: {(totalCost - paid).toLocaleString()} شيكل</p>}
+          <p className="text-3xl font-bold text-emerald-400">{totalCost.toLocaleString()} {currencyLabel}</p>
+          {currency !== 'ILS' && <p className="text-xs text-white/50 mt-1">بتنحسب بالشيكل حسب سعر الصرف بالإعدادات</p>}
+          {(totalCost - paid) > 0 && <p className="text-sm text-red-400 mt-1">الدين المتبقي للمورد: {(totalCost - paid).toLocaleString()} {currencyLabel}</p>}
         </div>
         <button onClick={handleSubmit} className="glass-button w-full sm:w-auto px-8 py-3 text-lg mt-4 sm:mt-0 !bg-emerald-600 hover:!bg-emerald-500" disabled={isPending || items.length === 0}>
           {isPending ? 'جاري الإدخال للمخزون...' : 'تأكيد وإدخال للمخزون'}

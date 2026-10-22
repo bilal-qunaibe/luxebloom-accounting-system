@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { signInWithEmailAndPassword } from 'firebase/auth'
 import { auth } from '../firebase'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Lock, Mail } from 'lucide-react'
 
 export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
+  const location = useLocation()
+  const [error, setError] = useState<string>((location.state as any)?.error || '')
   const [isLoading, setIsLoading] = useState(false)
   const navigate = useNavigate()
 

@@ -6,26 +6,10 @@ import {
 } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
 
-const PROJECT_ID = 'manasra-32b5e';
-import.meta.env.VITE_FIREBASE_API_KEY
-const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
+import { fetchAllDocs, isCancelled, useDataRefresh } from '@/lib/db'
 
 // أضفنا لون جديد (للعلب والساعات) في الرسم البياني
 const COLORS = ['#C5CBAF', '#2B3A32', '#d4af37', '#E8E8E8', '#A9A9A9']
-
-function parseFirestoreDoc(doc: any) {
-  const id = doc.name.split('/').pop();
-  const fields = doc.fields || {};
-  const data: any = { id };
-  for (const key in fields) {
-    const valObj = fields[key];
-    if ('stringValue' in valObj) data[key] = valObj.stringValue;
-    else if ('integerValue' in valObj) data[key] = parseInt(valObj.integerValue);
-    else if ('doubleValue' in valObj) data[key] = parseFloat(valObj.doubleValue);
-    else if ('booleanValue' in valObj) data[key] = valObj.booleanValue;
-  }
-  return data;
-}
 
 export default function Dashboard() {
   const [products, setProducts] = useState<any[]>([])
@@ -37,27 +21,6 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(true)
   
   const [dateFilter, setDateFilter] = useState('all') 
-
-  // 🌟 دالة الجلب اللانهائي لكل الكوليكشنز عشان الداشبورد يحسب كل فلس وكل منتج
-  const fetchAllDocs = async (collectionName: string) => {
-    let allDocs: any[] = [];
-    let pageToken = '';
-    do {
-      const url = pageToken 
-        ? `${BASE_URL}/${collectionName}?pageSize=300&key=${API_KEY}&pageToken=${pageToken}` 
-        : `${BASE_URL}/${collectionName}?pageSize=300&key=${API_KEY}`;
-      
-      const res = await fetch(url);
-      if (res.status === 404) break;
-      const data = await res.json();
-      if (data.documents) {
-        allDocs = [...allDocs, ...data.documents.map(parseFirestoreDoc)];
-      }
-      pageToken = data.nextPageToken;
-    } while (pageToken);
-    
-    return allDocs;
-  }
 
   const fetchData = async () => {
     setIsLoading(true)
@@ -89,6 +52,7 @@ export default function Dashboard() {
   useEffect(() => {
     fetchData()
   }, [])
+  useDataRefresh(fetchData)
 
   const filterByDate = (items: any[]) => {
     if (dateFilter === 'all') return items;
@@ -112,9 +76,9 @@ export default function Dashboard() {
 
   const filteredData = useMemo(() => {
     return {
-      sales: filterByDate(sales),
-      purchases: filterByDate(purchases),
-      expenses: filterByDate(expenses),
+      sales: filterByDate(sales.filter(s => !isCancelled(s))),
+      purchases: filterByDate(purchases.filter(p => !isCancelled(p))),
+      expenses: filterByDate(expenses.filter(e => !isCancelled(e))),
     }
   }, [sales, purchases, expenses, dateFilter])
 
@@ -122,7 +86,9 @@ export default function Dashboard() {
     const totalSales = filteredData.sales.reduce((sum, s) => sum + (Number(s.totalRevenue) || Number(s.total) || 0), 0)
     const totalPurchases = filteredData.purchases.reduce((sum, p) => sum + (Number(p.totalCost) || Number(p.total) || 0), 0)
     const totalExpenses = filteredData.expenses.reduce((sum, e) => sum + (Number(e.amount) || Number(e.total) || 0), 0)
-    const netProfit = totalSales - totalPurchases - totalExpenses
+    // الربح الصافي = المبيعات - تكلفة البضاعة المباعة - المصاريف
+    const costOfSales = filteredData.sales.reduce((sum, s) => sum + (Number(s.totalCost) || 0), 0)
+    const netProfit = totalSales - costOfSales - totalExpenses
     
     const customerDebts = customers.reduce((sum, c) => sum + (Number(c.debt) || 0), 0)
     const supplierDebts = suppliers.reduce((sum, s) => sum + (Number(s.debt) || 0), 0)

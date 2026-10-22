@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { doc, getDoc, setDoc } from 'firebase/firestore'
-import { db } from '../firebase'
+import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from 'firebase/auth'
+import { auth } from '../firebase'
+import { callAction, fetchDoc, money } from '@/lib/db'
 import { Settings, Database, Shield, Palette, Bell, Save, CheckCircle2 } from 'lucide-react'
 
 export default function SettingsPage() {
@@ -15,6 +16,9 @@ export default function SettingsPage() {
   const [address, setAddress] = useState('')
   const [currency, setCurrency] = useState('ILS')
   const [dateFormat, setDateFormat] = useState('gregorian') // ميلادي افتراضي
+
+  // --- أسعار الصرف (بتنستخدم بأي عملية بالدولار أو الدينار) ---
+  const [rates, setRates] = useState({ USD: '3.7', JOD: '5.2' })
 
   // --- حالات المظهر ---
   const [theme, setTheme] = useState('dark')
@@ -31,9 +35,8 @@ export default function SettingsPage() {
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const docSnap = await getDoc(doc(db, 'settings', 'system'))
-        if (docSnap.exists()) {
-          const data = docSnap.data()
+        const data: any = await fetchDoc('settings', 'system')
+        if (data) {
           if (data.general) {
             setStoreName(data.general.storeName || 'لوكس بلوم')
             setPhone(data.general.phone || '')
@@ -46,7 +49,10 @@ export default function SettingsPage() {
             setTheme(data.appearance.theme || 'dark')
           }
           if (data.notifications) {
-            setNotifications(data.notifications)
+            setNotifications({ ...notifications, ...data.notifications })
+          }
+          if (data.rates) {
+            setRates({ USD: String(data.rates.USD ?? '3.7'), JOD: String(data.rates.JOD ?? '5.2') })
           }
         }
       } catch (error) {
@@ -73,17 +79,20 @@ export default function SettingsPage() {
   const handleSave = async () => {
     setIsSaving(true)
     try {
-      await setDoc(doc(db, 'settings', 'system'), {
+      const usd = Number(rates.USD), jod = Number(rates.JOD)
+      if (!(usd > 0) || !(jod > 0)) throw new Error('أسعار الصرف لازم تكون أرقام أكبر من صفر')
+      await callAction('settings.update', {
         general: { storeName, phone, email, address, currency, dateFormat },
-        appearance: { theme },
-        notifications: notifications
-      }, { merge: true }) // merge: true عشان ما يمسح بيانات ثانية لو موجودة
+        appearance: { theme: theme as 'dark' | 'light' },
+        notifications,
+        rates: { USD: usd, JOD: jod },
+      })
       
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     } catch (error) {
       console.error("Error saving settings:", error)
-      alert("حدث خطأ أثناء الحفظ")
+      alert((error as any)?.message || "حدث خطأ أثناء الحفظ")
     } finally {
       setIsSaving(false)
     }
@@ -114,7 +123,7 @@ export default function SettingsPage() {
             {[
               { id: 'general', label: 'عام', icon: Settings },
               { id: 'appearance', label: 'المظهر', icon: Palette },
-              { id: 'database', label: 'قاعدة البيانات', icon: Database },
+              { id: 'database', label: 'ترحيل البيانات', icon: Database },
               { id: 'security', label: 'الأمان', icon: Shield },
               { id: 'notifications', label: 'الإشعارات', icon: Bell },
             ].map((item) => {
@@ -174,6 +183,17 @@ export default function SettingsPage() {
                     </select>
                   </div>
                 </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm text-white/60 mb-1">سعر الدولار بالشيكل</label>
+                    <input type="number" step="0.01" min="0" value={rates.USD} onChange={(e) => setRates({ ...rates, USD: e.target.value })} className="glass-input w-full" />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-white/60 mb-1">سعر الدينار بالشيكل</label>
+                    <input type="number" step="0.01" min="0" value={rates.JOD} onChange={(e) => setRates({ ...rates, JOD: e.target.value })} className="glass-input w-full" />
+                  </div>
+                </div>
+                <p className="text-xs text-white/40">أي مصروف أو شراء أو حركة شريك بعملة ثانية بتتحول للشيكل بهاد السعر، إلا إذا حددت سعر غيره بالعملية.</p>
               </div>
             </div>
           )}
@@ -206,66 +226,11 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* 3. قاعدة البيانات */}
-          {activeTab === 'database' && (
-            <div className="space-y-6">
-              <h3 className="section-title">حالة قاعدة البيانات</h3>
-              <div className="space-y-4">
-                <div className="glass p-5 rounded-lg border border-emerald-500/20">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-lg font-bold text-white">الخوادم السحابية (Firebase)</p>
-                      <p className="text-sm text-white/50 mt-1">قاعدة البيانات تعمل بأعلى كفاءة</p>
-                    </div>
-                    <div className="flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 rounded-full border border-emerald-500/20">
-                      <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                      <span className="text-xs text-emerald-400 font-medium">متصل ومزامن</span>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="glass p-5 rounded-lg border border-gold-500/20 bg-gold-500/5">
-                  <h4 className="text-gold-400 font-bold mb-2 flex items-center gap-2">
-                    <Shield className="w-4 h-4" /> 
-                    الأمان والنسخ الاحتياطي
-                  </h4>
-                  <p className="text-sm text-white/70 leading-relaxed">
-                    تم نقل نظامك بالكامل من التخزين المحلي القديم إلى خوادم جوجل السحابية (Firebase Firestore). 
-                    هذا يعني أن بياناتك تُحفظ وتُزامن فوراً وبشكل آمن 100%. لم تعد بحاجة لعمل "نسخ احتياطي" يدوي، 
-                    فبياناتك محمية من التلف أو الضياع حتى لو فقدت جهازك.
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
+          {/* 3. ترحيل البيانات القديمة للدفاتر */}
+          {activeTab === 'database' && <MigrationPanel />}
 
           {/* 4. الأمان */}
-          {activeTab === 'security' && (
-            <div className="space-y-6">
-              <h3 className="section-title">الأمان وتغيير كلمة المرور</h3>
-              <div className="space-y-4 max-w-md">
-                <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 mb-4">
-                  <p className="text-xs text-blue-400">ملاحظة: هذه الواجهة جاهزة للاستخدام بمجرد تفعيل نظام تسجيل الدخول للموظفين مستقبلاً.</p>
-                </div>
-                <div>
-                  <label className="block text-sm text-white/60 mb-1">كلمة المرور الحالية</label>
-                  <input type="password" placeholder="••••••••" className="glass-input w-full" disabled />
-                </div>
-                <div>
-                  <label className="block text-sm text-white/60 mb-1">كلمة المرور الجديدة</label>
-                  <input type="password" placeholder="••••••••" className="glass-input w-full" disabled />
-                </div>
-                <div>
-                  <label className="block text-sm text-white/60 mb-1">تأكيد كلمة المرور</label>
-                  <input type="password" placeholder="••••••••" className="glass-input w-full" disabled />
-                </div>
-                <div className="flex items-center gap-3 p-3 rounded-lg bg-white/[0.02] border border-white/[0.05]">
-                  <input type="checkbox" className="w-4 h-4 accent-gold-500 rounded" disabled />
-                  <span className="text-sm text-white/70">تفعيل تسجيل الدخول المزدوج (2FA)</span>
-                </div>
-              </div>
-            </div>
-          )}
+          {activeTab === 'security' && <PasswordPanel />}
 
           {/* 5. الإشعارات */}
           {activeTab === 'notifications' && (
@@ -322,5 +287,102 @@ export default function SettingsPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+// ترحيل الفواتير والمصاريف والديون القديمة لقيود محاسبية (بيتنفذ مرة وحدة وآمن للتكرار)
+function MigrationPanel() {
+  const [result, setResult] = useState<any>(null)
+  const [isRunning, setIsRunning] = useState(false)
+
+  const run = async (dryRun: boolean) => {
+    if (!dryRun && !window.confirm('رح ينعمل قيد لكل فاتورة ومصروف ودين قديم. متأكد؟')) return
+    setIsRunning(true)
+    try {
+      setResult(await callAction('migration.run', { dryRun }))
+    } catch (err: any) {
+      alert(err.message)
+    } finally {
+      setIsRunning(false)
+    }
+  }
+
+  const s = result?.summary
+  return (
+    <div className="space-y-6">
+      <h3 className="section-title">ترحيل البيانات القديمة للدفاتر</h3>
+      <p className="text-sm text-white/60 leading-relaxed">
+        الفواتير والمصاريف اللي انسجلت قبل التحديث ما إلها قيود محاسبية. هاي الأداة بتعمل قيد لكل وحدة منهم، وبتسجل ديون العملاء والموردين كأرصدة افتتاحية،
+        وبتطابق حساب المخزون مع قيمة البضاعة الفعلية. ما بتغير ولا رقم بالفواتير نفسها، وإذا انعادت ما بتكرر إشي.
+      </p>
+      <div className="flex gap-3">
+        <button onClick={() => run(true)} disabled={isRunning} className="glass-button-secondary px-4 py-2 rounded-lg">{isRunning ? 'جاري الفحص...' : 'معاينة'}</button>
+        {s && result.dryRun && s.entries > 0 && (
+          <button onClick={() => run(false)} disabled={isRunning} className="glass-button px-4 py-2">تنفيذ الترحيل ({s.entries} قيد)</button>
+        )}
+      </div>
+      {s && (
+        <div className="glass p-5 rounded-lg space-y-2 text-sm">
+          <p className="font-bold text-white mb-2">{result.dryRun ? 'نتيجة المعاينة (ما انحفظ إشي)' : 'تم الترحيل ✓'}</p>
+          <Row label={`مبيعات قديمة (${s.sales.count})`} value={`${money(s.sales.revenue)} — منها غير مدفوع ${money(s.sales.unpaid)}`} />
+          <Row label={`مشتريات قديمة (${s.purchases.count})`} value={`${money(s.purchases.total)} — منها غير مدفوع ${money(s.purchases.unpaid)}`} />
+          <Row label={`مصاريف قديمة (${s.expenses.count})`} value={money(s.expenses.total)} />
+          <Row label={`ديون عملاء (${s.customerDebts.count})`} value={money(s.customerDebts.total)} />
+          <Row label={`ديون موردين (${s.supplierDebts.count})`} value={money(s.supplierDebts.total)} />
+          <Row label="قيمة المخزون الفعلية" value={money(s.inventory.actualValue)} />
+          <Row label="تسوية المخزون" value={money(s.inventory.adjustment)} />
+          <Row label="عدد القيود" value={String(s.entries)} />
+          {s.sales.unpaid > 0 && s.customerDebts.total > 0 && (
+            <p className="text-xs text-amber-400 pt-2">انتبه: في مبالغ غير مدفوعة بفواتير قديمة وكمان ديون مسجلة يدوياً على العملاء. إذا هم نفس الديون، عدّل واحد منهم قبل التنفيذ عشان ما تنحسب مرتين.</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between border-b border-white/[0.06] py-1.5">
+      <span className="text-white/60">{label}</span>
+      <span className="text-white/90">{value}</span>
+    </div>
+  )
+}
+
+function PasswordPanel() {
+  const [form, setForm] = useState({ current: '', next: '', confirm: '' })
+  const [isSaving, setIsSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setMsg('')
+    if (form.next.length < 8) return setMsg('كلمة المرور الجديدة لازم تكون 8 أحرف على الأقل')
+    if (form.next !== form.confirm) return setMsg('التأكيد مش مطابق')
+    const user = auth.currentUser
+    if (!user?.email) return
+    setIsSaving(true)
+    try {
+      await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, form.current))
+      await updatePassword(user, form.next)
+      setForm({ current: '', next: '', confirm: '' })
+      setMsg('تم تغيير كلمة المرور ✓')
+    } catch {
+      setMsg('كلمة المرور الحالية غير صحيحة')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-4 max-w-md">
+      <h3 className="section-title">تغيير كلمة المرور</h3>
+      <input type="password" required placeholder="كلمة المرور الحالية" value={form.current} onChange={(e) => setForm({ ...form, current: e.target.value })} className="glass-input w-full" />
+      <input type="password" required placeholder="كلمة المرور الجديدة" value={form.next} onChange={(e) => setForm({ ...form, next: e.target.value })} className="glass-input w-full" />
+      <input type="password" required placeholder="تأكيد كلمة المرور" value={form.confirm} onChange={(e) => setForm({ ...form, confirm: e.target.value })} className="glass-input w-full" />
+      {msg && <p className="text-sm text-gold-400">{msg}</p>}
+      <button type="submit" disabled={isSaving} className="glass-button">{isSaving ? 'جاري الحفظ...' : 'تغيير كلمة المرور'}</button>
+    </form>
   )
 }

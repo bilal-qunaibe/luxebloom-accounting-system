@@ -1,39 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Plus, Search, DollarSign } from 'lucide-react'
+import { Plus, Search, DollarSign, Ban } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-
-const PROJECT_ID = 'manasra-32b5e';
-import.meta.env.VITE_FIREBASE_API_KEY
-const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-
-// دوال التحويل الذكية
-function parseFirestoreDoc(doc: any) {
-  const id = doc.name.split('/').pop();
-  const fields = doc.fields || {};
-  const data: any = { id };
-  for (const key in fields) {
-    const valObj = fields[key];
-    if ('stringValue' in valObj) data[key] = valObj.stringValue;
-    else if ('integerValue' in valObj) data[key] = parseInt(valObj.integerValue);
-    else if ('doubleValue' in valObj) data[key] = parseFloat(valObj.doubleValue);
-    else if ('booleanValue' in valObj) data[key] = valObj.booleanValue;
-  }
-  return data;
-}
-
-function toFirestoreFields(obj: any) {
-  const fields: any = {};
-  for (const key in obj) {
-    const val = obj[key];
-    if (val === null || val === undefined || val === '') continue;
-    if (typeof val === 'string') fields[key] = { stringValue: val };
-    else if (typeof val === 'number') {
-      if (Number.isInteger(val)) fields[key] = { integerValue: val.toString() };
-      else fields[key] = { doubleValue: val };
-    } else if (typeof val === 'boolean') fields[key] = { booleanValue: val };
-  }
-  return fields;
-}
+import { callAction, fetchAllDocs, isCancelled, EXPENSE_CATEGORIES, PAYMENT_METHODS, CURRENCIES, useDataRefresh } from '@/lib/db'
 
 export default function Expenses() {
   const [search, setSearch] = useState('')
@@ -44,11 +12,7 @@ export default function Expenses() {
   const fetchData = async () => {
     setIsLoading(true)
     try {
-      const res = await fetch(`${BASE_URL}/expenses?pageSize=100&key=${API_KEY}`)
-      if (res.status !== 404) {
-        const data = await res.json()
-        setExpenses((data.documents || []).map((d: any) => parseFirestoreDoc(d)))
-      }
+      setExpenses(await fetchAllDocs('expenses'))
     } catch (error) {
       console.error("خطأ في جلب المصاريف:", error)
     } finally {
@@ -59,13 +23,25 @@ export default function Expenses() {
   useEffect(() => {
     fetchData()
   }, [])
+  useDataRefresh(fetchData)
+
+  const handleCancel = async (exp: any) => {
+    const reason = window.prompt(`سبب إلغاء المصروف "${exp.title}"؟`)
+    if (reason === null) return
+    try {
+      await callAction('document.reverse', { kind: 'expense', id: exp.id, reason })
+      fetchData()
+    } catch (err: any) {
+      alert(err.message)
+    }
+  }
 
   const filteredExpenses = expenses
     .filter(exp => exp.title?.toLowerCase().includes(search.toLowerCase()) || exp.category?.includes(search))
     .sort((a, b) => new Date(b.date || b.createdAt).getTime() - new Date(a.date || a.createdAt).getTime());
 
-  // حساب إجمالي المصاريف المعروضة
-  const totalExpenses = filteredExpenses.reduce((sum, exp) => sum + (Number(exp.amount) || 0), 0);
+  // حساب إجمالي المصاريف المعروضة (بدون الملغاة)
+  const totalExpenses = filteredExpenses.filter(exp => !isCancelled(exp)).reduce((sum, exp) => sum + (Number(exp.amount) || 0), 0);
 
   return (
     <div className="space-y-6">
@@ -117,18 +93,23 @@ export default function Expenses() {
               <th>التصنيف</th>
               <th>ملاحظات</th>
               <th className="text-left">المبلغ</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={5} className="text-center py-8 text-white/50">جاري تحميل المصاريف...</td></tr>
+              <tr><td colSpan={6} className="text-center py-8 text-white/50">جاري تحميل المصاريف...</td></tr>
             ) : filteredExpenses.length === 0 ? (
-              <tr><td colSpan={5} className="text-center py-8 text-white/40">لا توجد مصاريف مسجلة</td></tr>
+              <tr><td colSpan={6} className="text-center py-8 text-white/40">لا توجد مصاريف مسجلة</td></tr>
             ) : (
               filteredExpenses.map((exp: any) => (
-                <tr key={exp.id}>
+                <tr key={exp.id} className={isCancelled(exp) ? 'opacity-50' : ''}>
                   <td>{new Date(exp.date || exp.createdAt).toLocaleDateString('ar-PS')}</td>
-                  <td className="font-medium text-white">{exp.title}</td>
+                  <td className="font-medium text-white">
+                    {exp.title}
+                    {isCancelled(exp) && <span className="badge-danger mr-2">ملغي</span>}
+                    {exp.origin === 'assistant' && <span className="text-[10px] text-white/40 mr-2">عبر المساعد</span>}
+                  </td>
                   <td>
                     <span className="text-xs bg-white/5 text-white/70 px-2 py-1 rounded border border-white/10">
                       {exp.category || 'عام'}
@@ -137,7 +118,17 @@ export default function Expenses() {
                   <td className="text-white/60 text-sm max-w-[200px] truncate" title={exp.notes}>
                     {exp.notes || '-'}
                   </td>
-                  <td className="text-left text-rose-400 font-bold">{Number(exp.amount || 0).toLocaleString()} ₪</td>
+                  <td className="text-left text-rose-400 font-bold">
+                    {Number(exp.amount || 0).toLocaleString()} ₪
+                    {exp.currency && exp.currency !== 'ILS' && <div className="text-[10px] text-white/40 font-normal">{exp.originalAmount} {CURRENCIES.find(c => c.value === exp.currency)?.label}</div>}
+                  </td>
+                  <td>
+                    {!isCancelled(exp) && (
+                      <button onClick={() => handleCancel(exp)} title="إلغاء المصروف" className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center hover:bg-red-500/20 transition-colors">
+                        <Ban className="w-3.5 h-3.5 text-red-400" />
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))
             )}
@@ -154,20 +145,13 @@ function ExpenseForm({ onSuccess }: { onSuccess: () => void }) {
     title: '',
     amount: '',
     category: 'فواتير (كهرباء، ماء، إنترنت)',
-    date: new Date().toISOString().split('T')[0],
-    notes: ''
+    date: new Date().toLocaleDateString('en-CA'),
+    notes: '',
+    currency: 'ILS',
+    paymentMethod: 'CASH',
   })
 
-  const categories = [
-    'رواتب وأجور',
-    'فواتير (كهرباء، ماء، إنترنت)',
-    'إيجار المحل',
-    'صيانة وتصليحات',
-    'ضيافة ونثريات',
-    'تسويق وإعلانات',
-    'شحن وتوصيل',
-    'مصاريف أخرى'
-  ]
+  const categories = EXPENSE_CATEGORIES
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -175,27 +159,19 @@ function ExpenseForm({ onSuccess }: { onSuccess: () => void }) {
 
     setIsPending(true)
     try {
-      const expenseData = {
+      await callAction('expense.create', {
         title: formData.title,
         amount: Number(formData.amount),
+        currency: formData.currency,
         category: formData.category,
+        paymentMethod: formData.paymentMethod,
         date: formData.date,
         notes: formData.notes,
-        createdAt: new Date().toISOString()
-      }
-
-      const res = await fetch(`${BASE_URL}/expenses?key=${API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: toFirestoreFields(expenseData) })
       })
-
-      if (!res.ok) throw new Error("فشل الحفظ")
-      
       onSuccess()
-    } catch (error) {
+    } catch (error: any) {
       console.error("خطأ:", error)
-      alert("حدث خطأ أثناء حفظ المصروف")
+      alert(error.message || "حدث خطأ أثناء حفظ المصروف")
     } finally {
       setIsPending(false)
     }
@@ -240,7 +216,7 @@ function ExpenseForm({ onSuccess }: { onSuccess: () => void }) {
         </div>
 
         <div>
-          <label className="block text-sm text-white/60 mb-1">المبلغ (شيكل) <span className="text-rose-400">*</span></label>
+          <label className="block text-sm text-white/60 mb-1">المبلغ <span className="text-rose-400">*</span></label>
           <input 
             required 
             type="number" 
@@ -254,6 +230,20 @@ function ExpenseForm({ onSuccess }: { onSuccess: () => void }) {
         </div>
 
         <div>
+          <label className="block text-sm text-white/60 mb-1">العملة</label>
+          <select value={formData.currency} onChange={(e) => setFormData({...formData, currency: e.target.value})} className="glass-input w-full">
+            {CURRENCIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-sm text-white/60 mb-1">طريقة الدفع</label>
+          <select value={formData.paymentMethod} onChange={(e) => setFormData({...formData, paymentMethod: e.target.value})} className="glass-input w-full">
+            {PAYMENT_METHODS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+          </select>
+        </div>
+
+        <div className="sm:col-span-2">
           <label className="block text-sm text-white/60 mb-1">ملاحظات إضافية</label>
           <input 
             type="text" 

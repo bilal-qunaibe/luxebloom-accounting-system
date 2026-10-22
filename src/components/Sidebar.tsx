@@ -1,5 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Package, ShoppingCart, ShoppingBag, BarChart2, Calculator, Users, Truck } from 'lucide-react'
+import { LayoutDashboard, Package, ShoppingCart, ShoppingBag, BarChart2, Calculator, Users, Truck, Receipt, Handshake, Settings, LogOut } from 'lucide-react'
+import { signOut } from 'firebase/auth'
+import { auth } from '../firebase'
 
 export default function Sidebar() {
   const location = useLocation()
@@ -12,8 +14,11 @@ export default function Sidebar() {
     { name: 'المشتريات', path: '/purchases', icon: ShoppingBag },
     { name: 'العملاء', path: '/customers', icon: Users },
     { name: 'الموردين', path: '/suppliers', icon: Truck },
+    { name: 'المصاريف', path: '/expenses', icon: Receipt },
+    { name: 'الشركاء', path: '/partners', icon: Handshake },
     { name: 'المحاسبة', path: '/accounting', icon: Calculator },
     { name: 'التقارير', path: '/reports', icon: BarChart2 },
+    { name: 'الإعدادات', path: '/settings', icon: Settings },
   ]
 
   return (
@@ -50,8 +55,14 @@ export default function Sidebar() {
       </nav>
 
       {/* تذييل القائمة */}
-      <div className="p-4 border-t border-[#C5CBAF]/10 text-center">
-        <p className="text-[10px] text-[#C5CBAF]/40">LUXEBLOOM V1.0 © 2026</p>
+      <div className="p-4 border-t border-[#C5CBAF]/10 text-center space-y-3">
+        <button
+          onClick={() => signOut(auth)}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-[#C5CBAF]/60 hover:bg-red-500/10 hover:text-red-400 transition-colors text-sm"
+        >
+          <LogOut className="w-4 h-4" /> تسجيل الخروج
+        </button>
+        <p className="text-[10px] text-[#C5CBAF]/40">LUXEBLOOM V2.0 © 2026</p>
       </div>
     </div>
   )

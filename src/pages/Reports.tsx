@@ -3,44 +3,7 @@ import { Download, Calendar } from 'lucide-react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import jsPDF from 'jspdf'
 
-const PROJECT_ID = 'manasra-32b5e';
-import.meta.env.VITE_FIREBASE_API_KEY
-const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
-
-// دوال التحويل الذكية للـ REST API
-function parseFirestoreDoc(doc: any) {
-  const id = doc.name.split('/').pop();
-  const fields = doc.fields || {};
-  const data: any = { id };
-  for (const key in fields) {
-    const valObj = fields[key];
-    if ('stringValue' in valObj) data[key] = valObj.stringValue;
-    else if ('integerValue' in valObj) data[key] = parseInt(valObj.integerValue);
-    else if ('doubleValue' in valObj) data[key] = parseFloat(valObj.doubleValue);
-    else if ('booleanValue' in valObj) data[key] = valObj.booleanValue;
-  }
-  return data;
-}
-
-// دالة الجلب اللانهائي
-const fetchAllDocs = async (collectionName: string) => {
-  let allDocs: any[] = [];
-  let pageToken = '';
-  do {
-    const url = pageToken 
-      ? `${BASE_URL}/${collectionName}?pageSize=300&key=${API_KEY}&pageToken=${pageToken}` 
-      : `${BASE_URL}/${collectionName}?pageSize=300&key=${API_KEY}`;
-    
-    const res = await fetch(url);
-    if (res.status === 404) break;
-    const data = await res.json();
-    if (data.documents) {
-      allDocs = [...allDocs, ...data.documents.map(parseFirestoreDoc)];
-    }
-    pageToken = data.nextPageToken;
-  } while (pageToken);
-  return allDocs;
-}
+import { fetchAllDocs, isCancelled, useDataRefresh } from '@/lib/db'
 
 export default function Reports() {
   const [activeTab, setActiveTab] = useState('sales')
@@ -63,8 +26,9 @@ export default function Reports() {
         fetchAllDocs('products')
       ])
 
-      setAllSales(salesData)
-      setAllPurchases(purData)
+      // الفواتير الملغاة ما بتدخل بالتقارير
+      setAllSales(salesData.filter((d: any) => !isCancelled(d)))
+      setAllPurchases(purData.filter((d: any) => !isCancelled(d)))
       setAllProducts(prodData)
     } catch (error) {
       console.error("خطأ في جلب بيانات التقارير:", error)
@@ -76,6 +40,7 @@ export default function Reports() {
   useEffect(() => {
     fetchData()
   }, [])
+  useDataRefresh(fetchData)
 
   // حسابات تقرير المبيعات
   const salesReport = useMemo(() => {

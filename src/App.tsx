@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react'
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { auth } from './firebase'
-import { onAuthStateChanged } from 'firebase/auth'
+import { onAuthStateChanged, signOut } from 'firebase/auth'
+import { callAction } from './lib/db'
 import { Menu, X } from 'lucide-react' // استيراد أيقونات القائمة للجوال
 
 // استيراد صفحات النظام
@@ -14,24 +15,43 @@ import Reports from './pages/Reports'
 import Accounting from './pages/Accounting'
 import Customers from './pages/Customers'
 import Suppliers from './pages/Suppliers'
+import Expenses from './pages/Expenses'
+import Partners from './pages/Partners'
+import SettingsPage from './pages/Settings'
+
+// المساعد الذكي
+import AssistantPanel from './components/AssistantPanel'
 
 // استدعاء القائمة الجانبية
 import Sidebar from './components/Sidebar'
 
-// مكون حماية الصفحات
+// مكون حماية الصفحات: تسجيل دخول + التأكد إن الحساب إله صلاحية على LuxeBloom
+// التحقق بيصير مرة وحدة لكل جلسة، مش مع كل تنقل بين الصفحات
+let verifiedUid: string | null = null
+
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
+  const [state, setState] = useState<'loading' | 'ok' | 'out'>(
+    auth.currentUser && auth.currentUser.uid === verifiedUid ? 'ok' : 'loading'
+  )
+  const navigate = useNavigate()
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser)
-      setLoading(false)
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (!currentUser) { verifiedUid = null; setState('out'); return }
+      if (currentUser.uid === verifiedUid) { setState('ok'); return }
+      try {
+        await callAction('session.init')
+        verifiedUid = currentUser.uid
+        setState('ok')
+      } catch (err: any) {
+        await signOut(auth)
+        navigate('/login', { replace: true, state: { error: err.message } })
+      }
     })
     return () => unsubscribe()
-  }, [])
+  }, [navigate])
 
-  if (loading) {
+  if (state === 'loading') {
     return (
       <div className="min-h-screen bg-[#2B3A32] flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-[#C5CBAF] border-t-transparent rounded-full animate-spin"></div>
@@ -39,7 +59,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     )
   }
 
-  return user ? children : <Navigate to="/login" />
+  return state === 'ok' ? children : <Navigate to="/login" />
 }
 
 // 🌟 المكون السحري المحدث ليناسب الجوال واللابتوب
@@ -94,6 +114,8 @@ function MainLayout({ children }: { children: React.ReactNode }) {
           {children}
         </div>
       </main>
+
+      <AssistantPanel />
     </div>
   )
 }
@@ -113,6 +135,10 @@ export default function App() {
       <Route path="/accounting" element={<ProtectedRoute><MainLayout><Accounting /></MainLayout></ProtectedRoute>} />
       <Route path="/customers" element={<ProtectedRoute><MainLayout><Customers /></MainLayout></ProtectedRoute>} />
       <Route path="/suppliers" element={<ProtectedRoute><MainLayout><Suppliers /></MainLayout></ProtectedRoute>} />
+      <Route path="/expenses" element={<ProtectedRoute><MainLayout><Expenses /></MainLayout></ProtectedRoute>} />
+      <Route path="/partners" element={<ProtectedRoute><MainLayout><Partners /></MainLayout></ProtectedRoute>} />
+      <Route path="/settings" element={<ProtectedRoute><MainLayout><SettingsPage /></MainLayout></ProtectedRoute>} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }
