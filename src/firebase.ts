@@ -1,9 +1,10 @@
 import { initializeApp } from "firebase/app";
 import { initializeFirestore } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
+import { getFunctions } from "firebase/functions";
 
 // تهيئة Firebase باستخدام متغيرات البيئة لضمان أمان المفاتيح
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
@@ -21,3 +22,6 @@ export const db = initializeFirestore(app, {
 
 // تفعيل وتصدير نظام المصادقة لتسجيل الدخول
 export const auth = getAuth(app);
+
+// الدوال السحابية (كل عمليات الحفظ بتمر منها)
+export const functions = getFunctions(app, "us-central1");
